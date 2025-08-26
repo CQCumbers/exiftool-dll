@@ -181,6 +181,7 @@ static void write_coff(FILE *out, char *name, FILE *embed, uint32_t size) {
 
     /* write header */
     struct coff_header header = {0};
+    header.magic = 0x8664;
     header.nscns = 1;
     header.symptr = sym_offset;
     header.nsyms = 2;
@@ -220,12 +221,95 @@ static void write_coff(FILE *out, char *name, FILE *embed, uint32_t size) {
     fputc('\0', out);
 }
 
+static int write_leb128(FILE *out, uint32_t value) {
+    for (;;) {
+        if (value < 0x80) return fwrite(&value, 1, 1, out);
+        uint8_t byte = 0x80 | (value & 0x7f);
+        fwrite(&byte, 1, 1, out), value >>= 7;
+    }
+}
+
+static void write_wasm(FILE *out, char *name, FILE *embed, uint32_t size) {
+    /* write header */
+    uint32_t name_len = (uint32_t)strlen(name) + 1;
+    uint32_t strs_len = name_len * 2 + 5;
+    uint32_t magic[] = { 0x6d736100, 1 };
+    fwrite(magic, sizeof(magic), 1, out);
+
+    /* write import section */
+    char import[] = "\x03" "env\x0f__linear_memory";
+    char imhead[] = { 0x02, sizeof(import) + 3, 1 };
+    char imdesc[] = { 0x02, 0x00, 0x01 };
+    fwrite(imhead, sizeof(imhead), 1, out);
+    fwrite(import, strlen(import), 1, out);
+    fwrite(imdesc, sizeof(imdesc), 1, out);
+
+    uint32_t size_len = 1, temp = size;
+    while (temp >>= 7) ++size_len;
+    uint32_t limit = 1 << (size_len * 7);
+    uint32_t extra = size + 4 >= limit;
+
+    /* write data section */
+    write_leb128(out, 0x0b);
+    write_leb128(out, 9 + size_len + extra + size);
+    char data[] = { 1, 0x00, 0x41, 0x00, 0x0b };
+    fwrite(data, sizeof(data), 1, out);
+    write_leb128(out, size + 4);
+
+    /* write out embed data */
+    fwrite(&size, sizeof(size), 1, out);
+    for (uint32_t i = 0; i < size - 1; ++i)
+        fputc(fgetc(embed), out);
+    fputc('\0', out);
+
+    /* write linker section */
+    uint32_t sym_len = strs_len + size_len + 12;
+    uint32_t seg_len = name_len + 6 + 4;
+    uint32_t ln_len = sym_len + seg_len + 4;
+    char linker[] = "\x07linking\x02";
+    char lnhead[] = { 0x00, strlen(linker) + ln_len };
+    fwrite(lnhead, sizeof(lnhead), 1, out);
+    fwrite(linker, strlen(linker), 1, out);
+
+    /* create symbol table */
+    char *sname = calloc(1, strs_len + 1);
+    sprintf(sname, "_%s_size_%s", name, name);
+    char *dname = sname + name_len + 5;
+    char symtab[] = { 0x08, sym_len };
+    fwrite(symtab, sizeof(symtab), 1, out);
+
+    char ssym0[] = { 2, 0x01, 0x00, name_len + 5 };
+    char ssym1[] = { 0x00, 0x00, 4 };
+    fwrite(ssym0, sizeof(ssym0), 1, out);
+    fwrite(sname, name_len + 5, 1, out);
+    fwrite(ssym1, sizeof(ssym1), 1, out);
+
+    char dsym0[] = { 0x01, 0x00, name_len + 0 };
+    char dsym1[] = { 0x00, 0x04 };
+    fwrite(dsym0, sizeof(dsym0), 1, out);
+    fwrite(dname, name_len + 0, 1, out);
+    fwrite(dsym1, sizeof(dsym1), 1, out);
+    write_leb128(out, size);
+
+    /* create segment info */
+    sprintf(sname, ".data._%s", name);
+    char seginf[] = { 0x05, seg_len };
+    fwrite(seginf, sizeof(seginf), 1, out);
+
+    char seg0[] = { 1, name_len + 6 };
+    char seg1[] = { 0x02, 0x00 };
+    fwrite(seg0, sizeof(seg0), 1, out);
+    fwrite(sname, name_len + 6, 1, out);
+    fwrite(seg1, sizeof(seg1), 1, out);
+    free(sname);
+}
+
 int main(int argc, char *argv[]) {
     /* check input file exists */
-    if (argc != 3) return puts("Usage: bin2obj <in> <out>"), 1;
-    FILE *embed = fopen(argv[1], "rb");
+    if (argc != 4) return puts("Usage: bin2obj <type> <in> <out>"), 1;
+    FILE *embed = fopen(argv[2], "rb");
     if (!embed) return puts("Can't open input"), 1;
-    FILE *out = fopen(argv[2], "wb+");
+    FILE *out = fopen(argv[3], "wb+");
     if(!out) return puts("Can't open out"), 1;
 
     /* calculate file size */
@@ -234,8 +318,8 @@ int main(int argc, char *argv[]) {
     fseek(embed, 0, SEEK_SET);
 
     /* symbol name from filename */
-    char *name = strrchr(argv[1], '/');
-    name = name ? name + 1 : argv[1];
+    char *name = strrchr(argv[2], '/');
+    name = name ? name + 1 : argv[2];
     for (char *p = name; *p; ++p) {
         if (*p >= 'a' && *p <= 'z') continue;
         if (*p >= 'A' && *p <= 'Z') continue;
@@ -244,9 +328,8 @@ int main(int argc, char *argv[]) {
     }
 
     /* out to object file */
-#ifdef _WIN32
-    write_coff(out, name, embed, size);
-#else
-    write_mach(out, name, embed, size);
-#endif
+    if (!strcmp(argv[1], "coff")) return write_coff(out, name, embed, size), 0;
+    if (!strcmp(argv[1], "wasm")) return write_wasm(out, name, embed, size), 0;
+    if (!strcmp(argv[1], "mach")) return write_mach(out, name, embed, size), 0;
+    return puts("Can't handle type"), 1;
 }

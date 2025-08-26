@@ -12,3 +12,9 @@ cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build --config Release
 cmake --install build --prefix install
 ```
+
+```
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
+  -DCMAKE_TOOLCHAIN_FILE=wasi-sdk.cmake \
+  -DWASI_SDK_PREFIX="wasi-sdk-path"
+```

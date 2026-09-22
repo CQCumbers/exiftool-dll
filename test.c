@@ -2,8 +2,15 @@
 #include <stdio.h>
 
 /* defined in p3dci.obj by bin2obj */
+#ifndef __linux__
 extern int _p3dci_icc_size;
 extern char _p3dci_icc[];
+#else
+//The size field from objcopy causes a segfault if accessed, so we need to use the start and end instead
+//Some googling indicates this is likely from compiling with -fPIC
+extern char _binary_p3dci_icc_start[];
+extern char _binary_p3dci_icc_end[];
+#endif
 
 int main(int argc, char *argv[]) {
     if (argc < 3) return puts("Usage: ./test <readfile> <writefile>"), 0;
@@ -89,7 +96,11 @@ int main(int argc, char *argv[]) {
     printf("New Comment : %s\n", exifdata_String(tool, val));
     exifdata_Destroy(tool, val);
 
+#ifndef __linux__
     val = exifdata_CreateBuffer(tool, _p3dci_icc, _p3dci_icc_size);
+#else
+    val = exifdata_CreateBuffer(tool, _binary_p3dci_icc_start, (_binary_p3dci_icc_end - _binary_p3dci_icc_start));
+#endif
     int status = exiftool_SetNewValue(tool, "ICC_Profile", val, options);
     printf("SetNewValue returned %d\n", status);
     exifdata_Destroy(tool, val);

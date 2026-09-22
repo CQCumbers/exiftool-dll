@@ -70,11 +70,19 @@ file(WRITE ${CMAKE_CURRENT_BINARY_DIR}/cp.cmake
 add_executable(bin2obj bin2obj.c)
 set(FATPACKER ${CMAKE_CURRENT_SOURCE_DIR}/FatPacker.pm)
 set(LOADER ${CMAKE_CURRENT_SOURCE_DIR}/loader.pl)
+if(UNIX AND NOT APPLE)
+    add_custom_command(OUTPUT packed.obj
+        COMMAND ${CMAKE_COMMAND} -P cp.cmake
+        COMMAND ${PERL_PREFIX}/perl ${FATPACKER} ${LOADER} > packed.pl
+        COMMAND "objcopy" "-I" "binary" "-O" "elf64-x86-64" packed.pl packed.obj
+        DEPENDS perl bin2obj ${FATPACKER} ${LOADER})
+else()
 add_custom_command(OUTPUT packed.obj
     COMMAND ${CMAKE_COMMAND} -P cp.cmake
     COMMAND ${PERL_PREFIX}/perl ${FATPACKER} ${LOADER} > packed.pl
     COMMAND "$<TARGET_FILE:bin2obj>" packed.pl packed.obj
     DEPENDS perl bin2obj ${FATPACKER} ${LOADER})
+endif()
 set_source_files_properties(packed.obj PROPERTIES EXTERNAL_OBJECT true GENERATED true)
 
 add_custom_command(OUTPUT perlxsi.c
@@ -82,13 +90,22 @@ add_custom_command(OUTPUT perlxsi.c
     DEPENDS perl)
 set_source_files_properties(perlxsi.c PROPERTIES GENERATED true)
 
-add_custom_command(OUTPUT p3dci.obj
-    COMMAND "$<TARGET_FILE:bin2obj>" ${CMAKE_CURRENT_SOURCE_DIR}/p3dci.icc p3dci.obj
-    DEPENDS bin2obj)
+if(UNIX AND NOT APPLE)
+    add_custom_command(OUTPUT p3dci.obj
+        COMMAND "cp" ${CMAKE_CURRENT_SOURCE_DIR}/p3dci.icc ./p3dci.icc
+        COMMAND "objcopy" "-I" "binary" "-O" "elf64-x86-64" p3dci.icc p3dci.obj)
+else()
+    add_custom_command(OUTPUT p3dci.obj
+        COMMAND "$<TARGET_FILE:bin2obj>" ${CMAKE_CURRENT_SOURCE_DIR}/p3dci.icc p3dci.obj
+        DEPENDS bin2obj)
+endif()
 set_source_files_properties(p3dci.obj PROPERTIES EXTERNAL_OBJECT true GENERATED true)
 
 # Build exiftool-dll C interface
 add_library(exiftool SHARED exiftool.h exiftool.c perlxsi.c packed.obj)
+if(UNIX AND NOT APPLE)
+    target_compile_options(exiftool PRIVATE -fPIC)
+endif()
 target_link_libraries(exiftool PRIVATE perl)
 target_compile_definitions(exiftool PRIVATE EXIFTOOL_EXPORTS)
 if(MSVC)
@@ -101,8 +118,13 @@ if(MSVC)
 endif()
 
 add_executable(test test.c p3dci.obj)
+if(UNIX AND NOT APPLE)
+    target_compile_options(test PRIVATE -fPIC)
+    #target_link_libraries(test PRIVATE perl)
+endif()
 target_link_libraries(test PRIVATE exiftool)
 
 # Install dll and headers
 install(TARGETS exiftool EXPORT exiftool)
 install(FILES exiftool.h DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
+install(FILES ${PERL_PREFIX}/lib/Config_git.pl DESTINATION ${CMAKE_INSTALL_LIBDIR})
